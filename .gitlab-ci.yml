@@ -1,0 +1,105 @@
+# Example Snyk IaC script for GitLab CI/CD Pipeline
+# validate gitlab.
+
+stages:          # List of stages for jobs, and their order of execution
+  - test
+  - build
+  - deploy
+
+snyk_test_iac_files:
+  image: node:latest
+  stage: test
+  script:
+    # Install npm, snyk, and snyk-to-html
+    - npm install -g npm@latest
+    - npm install -g snyk
+    - npm install snyk-to-html -g
+    # Run snyk help, snyk auth, snyk monitor, snyk test to break build and out report
+    - snyk --help
+    - snyk auth ${SNYK_TOKEN}
+    - snyk iac test || true # do not fail, next line will fail
+    - snyk iac test . --json | snyk-to-html -o ${CI_PROJECT_DIR}/snyk_results.html
+  allow_failure: true
+
+  # Save report to artifacts
+  artifacts:
+    paths: 
+      - ${CI_PROJECT_DIR}/snyk_results.html
+    when: always
+    expire_in: 1 week
+
+terraform_fmt:
+  stage: test
+  image:
+    name: registry.gitlab.com/gitlab-org/terraform-images/branches/v0-25-0-0.14:2063beda9381c4816d533b1b40b497dafe5abf72
+
+  variables:
+    TF_ROOT: ${CI_PROJECT_DIR}  # The relative path to the root directory of the Terraform project
+
+  script:
+    - cd ${TF_ROOT}
+    - gitlab-terraform fmt
+  allow_failure: true
+
+terraform_plan:
+  stage: build
+  image:
+    name: registry.gitlab.com/gitlab-org/terraform-images/branches/v0-25-0-0.14:2063beda9381c4816d533b1b40b497dafe5abf72
+
+  variables:
+    TF_ROOT: ${CI_PROJECT_DIR}  # The relative path to the root directory of the Terraform project
+
+  script:
+    - cd ${TF_ROOT}
+    - terraform version
+    - terraform init
+    - terraform plan -out=out.plan
+    - mkdir planfile
+    - terraform show --json out.plan > planfile/plan.json
+  artifacts:
+    paths:
+      - planfile/plan.json
+    expire_in: 1 week
+  allow_failure: false
+
+snyk_test_terraform_plan:
+  stage: deploy
+  image: node:latest
+
+  dependencies:
+    - terraform_plan
+
+  variables:
+    TF_ROOT: ${CI_PROJECT_DIR}  # The relative path to the root directory of the Terraform project
+
+  script:
+    # Install npm, snyk, and snyk-to-html
+    - npm install -g npm@latest
+    - npm install -g snyk
+    - npm install snyk-to-html -g
+    # Run snyk help, snyk auth, snyk monitor, snyk test to break build and out report
+    - snyk --help
+    - snyk auth ${SNYK_TOKEN}
+    - snyk iac test ${CI_PROJECT_DIR}/planfile/plan.json --json | snyk-to-html -o ${CI_PROJECT_DIR}/snyk_planresults.html
+  allow_failure: false
+
+  artifacts:
+    paths: 
+      - ${CI_PROJECT_DIR}/snyk_planresults.html
+    when: always
+    expire_in: 1 week
+
+terraform_apply:
+  stage: deploy
+  image:
+    name: registry.gitlab.com/gitlab-org/terraform-images/branches/v0-25-0-0.14:2063beda9381c4816d533b1b40b497dafe5abf72
+
+  dependencies:
+    - snyk_test_terraform_plan
+
+  script:
+    - ls -las ${CI_PROJECT_DIR}
+    - cd ${CI_PROJECT_DIR}
+    - terraform version
+
+  when: manual
